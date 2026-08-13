@@ -714,6 +714,14 @@ impl RelayEventPublisher {
         });
         (Self { cmd_tx }, event_rx)
     }
+
+    /// Test-only publisher whose command receiver is already closed.
+    #[cfg(test)]
+    pub(crate) fn disconnected_test_publisher() -> Self {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<RelayCommand>(1);
+        drop(cmd_rx);
+        Self { cmd_tx }
+    }
 }
 
 impl HarnessRelay {

@@ -1558,6 +1558,44 @@ fn inactivity_expired(
     !bound.is_zero() && !turn_in_flight && now.duration_since(last_activity) >= bound
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObserverFeaturePlan {
+    create_bus: bool,
+    publish_owner_observer: bool,
+    publish_member_activity: bool,
+}
+
+fn observer_feature_plan(relay_observer: bool, relay_activity: bool) -> ObserverFeaturePlan {
+    ObserverFeaturePlan {
+        create_bus: relay_observer || relay_activity,
+        publish_owner_observer: relay_observer,
+        publish_member_activity: relay_activity,
+    }
+}
+
+#[cfg(test)]
+mod observer_feature_plan_tests {
+    use super::*;
+
+    #[test]
+    fn owner_observer_and_member_activity_have_independent_runtime_plans() {
+        let activity_only = observer_feature_plan(false, true);
+        assert!(activity_only.create_bus);
+        assert!(!activity_only.publish_owner_observer);
+        assert!(activity_only.publish_member_activity);
+
+        let owner_only = observer_feature_plan(true, false);
+        assert!(owner_only.create_bus);
+        assert!(owner_only.publish_owner_observer);
+        assert!(!owner_only.publish_member_activity);
+
+        let disabled = observer_feature_plan(false, false);
+        assert!(!disabled.create_bus);
+        assert!(!disabled.publish_owner_observer);
+        assert!(!disabled.publish_member_activity);
+    }
+}
+
 #[cfg(test)]
 mod event_channel_binding_tests {
     use super::*;
@@ -1706,8 +1744,9 @@ async fn tokio_main() -> Result<()> {
 
     tracing::info!("buzz-acp starting: {}", config.summary());
 
-    let observer = config
-        .relay_observer
+    let observer_features = observer_feature_plan(config.relay_observer, config.relay_activity);
+    let observer = observer_features
+        .create_bus
         .then(observer::ObserverHandle::in_process);
     if let Some(handle) = &observer {
         handle.emit(
@@ -1720,6 +1759,7 @@ async fn tokio_main() -> Result<()> {
                 "agentArgs": config.agent_args,
                 "parallelism": config.agents,
                 "relayObserver": config.relay_observer,
+                "relayActivity": config.relay_activity,
             }),
         );
     }
@@ -1806,7 +1846,7 @@ async fn tokio_main() -> Result<()> {
     let mut relay_observer_publisher_task = None;
     let mut relay_activity_publisher_task = None;
     let mut relay_observer_publisher = None;
-    if config.relay_observer {
+    if observer_features.publish_owner_observer {
         if let (Some(observer), Some(owner_pubkey_hex)) =
             (observer.clone(), owner_cache.pubkey.clone())
         {
@@ -1904,7 +1944,10 @@ async fn tokio_main() -> Result<()> {
     // owner-only encrypted feed, but is independently sanitized, signed, paced,
     // and authorized by the relay. It starts after channel discovery so DM and
     // non-shared channel traffic can be suppressed before publication.
-    if let Some(activity_observer) = observer.clone() {
+    if observer_features.publish_member_activity {
+        let activity_observer = observer
+            .clone()
+            .expect("member activity feature plan always creates observer bus");
         relay_activity_publisher_task = Some(agent_activity::spawn_relay_activity_publisher(
             activity_observer,
             relay.event_publisher(),
@@ -3283,11 +3326,15 @@ async fn tokio_main() -> Result<()> {
         handle.abort();
     }
     if let Some(handle) = relay_activity_publisher_task.take() {
-        handle.abort();
+        if !handle.shutdown(Duration::from_secs(20)).await {
+            tracing::warn!("member-safe activity publisher did not drain cleanly");
+        }
     }
 
-    // Graceful relay shutdown — sends WebSocket close frame and waits up to 5s
-    // for the background task to finish, rather than aborting immediately (#40).
+    // The activity publisher has now enqueued every sanitized terminal update.
+    // Graceful relay shutdown processes those FIFO commands, waits up to 4s for
+    // terminal relay acknowledgments, then closes the socket and waits up to 5s
+    // for the background task.
     relay.shutdown().await;
 
     tracing::info!("buzz-acp stopped");
@@ -7435,6 +7482,7 @@ mod build_mcp_servers_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_activity: false,
             exit_after_inactivity_secs: 0,
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
@@ -7658,6 +7706,7 @@ mod error_outcome_emission_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_activity: false,
             exit_after_inactivity_secs: 0,
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
