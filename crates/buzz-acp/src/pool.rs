@@ -610,6 +610,7 @@ impl ChannelInfoResolver {
                     PromptChannelInfo {
                         name: info.name,
                         channel_type: info.channel_type,
+                        description: None,
                     },
                 ))
             })
@@ -2374,6 +2375,8 @@ pub async fn run_prompt_task(
                 system_prompt: ctx.system_prompt.as_deref(),
                 team_instructions: ctx.team_instructions.as_deref(),
                 agent_canvas: agent_canvas.as_deref(),
+                standing_context_sent: false,
+                conversation_context_had_delivered_events: false,
             },
         )
     } else {
@@ -2904,6 +2907,7 @@ pub(crate) async fn fetch_channel_info(
                 Some(PromptChannelInfo {
                     name: info.name,
                     channel_type: info.channel_type,
+                    description: None,
                 })
             }
             Ok(Err(e)) => {
@@ -3659,6 +3663,11 @@ fn json_to_context_message(obj: &serde_json::Value) -> Option<ContextMessage> {
         .unwrap_or_else(|| "unknown".to_string());
 
     Some(ContextMessage {
+        event_id: obj
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
         pubkey: pubkey.to_string(),
         timestamp,
         content: content.to_string(),
@@ -3741,6 +3750,7 @@ fn parse_nostr_thread_response_with_meta(
 
         let ev_id = event.id.to_hex();
         let msg = ContextMessage {
+            event_id: ev_id.clone(),
             pubkey: event.pubkey.to_hex(),
             timestamp: chrono::DateTime::from_timestamp(event.created_at.as_secs() as i64, 0)
                 .map(|dt| dt.to_rfc3339())
@@ -4266,8 +4276,8 @@ pub(crate) fn build_turn_metric_counts(
         None
     };
     let cumulative_counts = Some(TokenCounts {
-        input_tokens: Some(usage.cumulative_input_tokens),
-        output_tokens: Some(usage.cumulative_output_tokens),
+        input_tokens: usage.cumulative_input_tokens,
+        output_tokens: usage.cumulative_output_tokens,
         // Present when every turn in the session reported a genuine provider
         // total. None when the session has never emitted one or any turn lacked
         // one. Never derived from input+output (NIP-AM MUST NOT).
@@ -4321,6 +4331,7 @@ async fn publish_agent_turn_metric(
         cumulative: cumulative_counts,
         delta_reliable: usage.delta_reliable,
         stop_reason,
+        pricing_identity: usage.pricing_identity.clone(),
     };
     let ciphertext = match buzz_core::agent_turn_metric::encrypt_agent_turn_metric(
         &ctx.agent_keys,
@@ -5761,6 +5772,7 @@ mod tests {
         };
         let context = ConversationContext::Thread {
             messages: vec![ContextMessage {
+                event_id: String::new(),
                 pubkey: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                 timestamp: "2026-03-25T05:51:25Z".into(),
                 content: "follow up".into(),
@@ -6814,12 +6826,15 @@ mod tests {
             turn_total_tokens: None,
             turn_cost_usd: None,
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 100,
-            cumulative_output_tokens: 50,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(100),
+            cumulative_output_tokens: Some(50),
             cumulative_total_tokens: None,
             cumulative_cost_usd: None,
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
         // owner_pubkey = None → early return, no panic.
         publish_agent_turn_metric(
@@ -6850,12 +6865,15 @@ mod tests {
             turn_total_tokens: None,
             turn_cost_usd: Some(0.001),
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 200,
-            cumulative_output_tokens: 80,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(200),
+            cumulative_output_tokens: Some(80),
             cumulative_total_tokens: None,
             cumulative_cost_usd: Some(0.001),
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
         // Will try to publish and fail (no real relay) but must not panic.
         publish_agent_turn_metric(
@@ -6887,12 +6905,15 @@ mod tests {
             turn_total_tokens: None,
             turn_cost_usd: None,
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 150,
-            cumulative_output_tokens: 70,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(150),
+            cumulative_output_tokens: Some(70),
             cumulative_total_tokens: None,
             cumulative_cost_usd: None,
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
         // Must not panic; HTTP submit will fail (no real relay) — that's fine.
         publish_agent_turn_metric(
@@ -6924,12 +6945,15 @@ mod tests {
             turn_total_tokens: None,
             turn_cost_usd: None,
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 400,
-            cumulative_output_tokens: 100,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(400),
+            cumulative_output_tokens: Some(100),
             cumulative_total_tokens: None,
             cumulative_cost_usd: None,
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
         // Will try to publish (encrypt succeeds) and fail HTTP (no relay) — must not panic.
         publish_agent_turn_metric(
@@ -6958,12 +6982,15 @@ mod tests {
             turn_total_tokens: Some(130), // genuine per-turn total
             turn_cost_usd: None,
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 500,
-            cumulative_output_tokens: 120,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(500),
+            cumulative_output_tokens: Some(120),
             cumulative_total_tokens: Some(620), // genuine cumulative total
             cumulative_cost_usd: None,
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
 
         let (turn, cumulative) = crate::pool::build_turn_metric_counts(&usage);
@@ -7007,12 +7034,15 @@ mod tests {
             turn_total_tokens: None, // provider did not supply a total
             turn_cost_usd: None,
             turn_cache_read_tokens: None,
-            cumulative_input_tokens: 200,
-            cumulative_output_tokens: 60,
+            turn_cache_write_tokens: None,
+            cumulative_input_tokens: Some(200),
+            cumulative_output_tokens: Some(60),
             cumulative_total_tokens: None, // session has no total
             cumulative_cost_usd: None,
             cumulative_cache_read_tokens: None,
+            cumulative_cache_write_tokens: None,
             model: None,
+            pricing_identity: None,
         };
 
         let (turn, cumulative) = crate::pool::build_turn_metric_counts(&usage);

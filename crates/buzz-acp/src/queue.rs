@@ -3242,7 +3242,7 @@ mod tests {
         assert!(
             queue
                 .retry_after
-                .get(&ch)
+                .get(&LaneKey::channel(ch))
                 .is_some_and(|&t| t > Instant::now()),
             "requeue must have set a future backoff deadline"
         );
@@ -3642,6 +3642,7 @@ mod tests {
         // evicting real channel history sooner.
         let ch = Uuid::new_v4();
         let batch = FlushBatch {
+            lane: LaneKey::channel(ch),
             channel_id: ch,
             events: vec![BatchEvent {
                 event: make_event("hello"),
@@ -4772,6 +4773,7 @@ mod tests {
             ]],
         );
         let batch = FlushBatch {
+            lane: LaneKey::channel(ch),
             channel_id: ch,
             events: vec![BatchEvent {
                 event,
@@ -4805,6 +4807,7 @@ mod tests {
     fn test_format_prompt_empty_dm_delta_distinguishes_trigger_only_from_delivered() {
         let ch = Uuid::new_v4();
         let batch = FlushBatch {
+            lane: LaneKey::channel(ch),
             channel_id: ch,
             events: vec![BatchEvent {
                 event: make_event("follow up"),
@@ -6368,6 +6371,7 @@ mod tests {
 
     fn description_batch(ch: Uuid, event: Event) -> FlushBatch {
         FlushBatch {
+            lane: LaneKey::channel(ch),
             channel_id: ch,
             events: vec![BatchEvent {
                 event,
